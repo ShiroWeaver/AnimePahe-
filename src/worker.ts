@@ -49,22 +49,32 @@ function parseAllowedUrl(rawUrl: string, kind: "image" | "stream"): URL | null {
 async function fetchAllowedUrl(
   initialUrl: URL,
   kind: "image" | "stream",
+  rangeHeader?: string,
+  ifRangeHeader?: string,
 ): Promise<Response> {
   let currentUrl = initialUrl;
 
   // Follow only a small number of redirects, validating every destination.
   for (let redirectCount = 0; redirectCount <= 5; redirectCount++) {
+    const requestHeaders = new Headers({
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+      Accept:
+        kind === "image"
+          ? "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+          : "*/*",
+      Referer: `${currentUrl.origin}/`,
+    });
+    if (kind === "stream" && rangeHeader) {
+      requestHeaders.set("Range", rangeHeader);
+    }
+    if (kind === "stream" && ifRangeHeader) {
+      requestHeaders.set("If-Range", ifRangeHeader);
+    }
+
     const response = await fetch(currentUrl.toString(), {
       redirect: "manual",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-        Accept:
-          kind === "image"
-            ? "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-            : "*/*",
-        Referer: `${currentUrl.origin}/`,
-      },
+      headers: requestHeaders,
     });
 
     if (![301, 302, 303, 307, 308].includes(response.status)) {
@@ -137,7 +147,12 @@ app.get("/_internal/stream-proxy/:url", async (c) => {
       return new Response("Stream host is not allowed", { status: 403 });
     }
 
-    const response = await fetchAllowedUrl(url, "stream");
+    const response = await fetchAllowedUrl(
+      url,
+      "stream",
+      c.req.header("Range"),
+      c.req.header("If-Range"),
+    );
     if (!response.ok) {
       return new Response(`Upstream stream request failed: ${response.status}`, {
         status: response.status,
@@ -145,7 +160,13 @@ app.get("/_internal/stream-proxy/:url", async (c) => {
     }
 
     const headers = new Headers();
-    for (const name of ["Content-Type", "Content-Length", "Accept-Ranges"]) {
+    for (const name of [
+      "Content-Type",
+      "Content-Range",
+      "Accept-Ranges",
+      "ETag",
+      "Last-Modified",
+    ]) {
       const value = response.headers.get(name);
       if (value) headers.set(name, value);
     }
