@@ -13,7 +13,7 @@ complete an interactive browser challenge.
 The code now reports this situation explicitly instead of silently turning a challenge page
 into empty catalog results. The addon cannot return fresh AnimePahe catalog data or streams
 until the upstream site permits the addon's requests or provides an approved API/access method.
-Changing between the three redirecting domains does not resolve that upstream restriction.
+Switching from `animepahe.com` or `animepahe.org` to `animepahe.pw` does not resolve that upstream restriction.
 
 ## Deploy your own Worker
 
