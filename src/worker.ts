@@ -10,11 +10,8 @@ const IMAGE_HOSTS = new Set([
   "animepahe.com",
   "animepahe.org",
 ]);
-const STREAM_HOST_SUFFIXES = [
-  ".uwucdn.top",
-  ".kwik.cx",
-  ".kwik.si",
-];
+const STREAM_HOSTS = new Set(["kwik.cx", "kwik.si"]);
+const STREAM_HOST_SUFFIXES = [".uwucdn.top", ".kwik.cx", ".kwik.si"];
 
 function hostAllowed(hostname: string, kind: "image" | "stream"): boolean {
   const host = hostname.toLowerCase().replace(/\.$/, "");
@@ -26,7 +23,10 @@ function hostAllowed(hostname: string, kind: "image" | "stream"): boolean {
       host.endsWith(".animepahe.org")
     );
   }
-  return STREAM_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
+  return (
+    STREAM_HOSTS.has(host) ||
+    STREAM_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))
+  );
 }
 
 function parseAllowedUrl(rawUrl: string, kind: "image" | "stream"): URL | null {
@@ -63,7 +63,7 @@ async function fetchAllowedUrl(
           kind === "image"
             ? "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
             : "*/*",
-        Referer: "https://animepahe.pw/",
+        Referer: `${currentUrl.origin}/`,
       },
     });
 
