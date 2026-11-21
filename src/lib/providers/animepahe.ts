@@ -257,184 +257,118 @@ export class AnimePaheProvider implements Provider {
     id: string
   ): Promise<Array<{ id: string; title: string; url: string }>> {
     const [animeId, animeSession] = id.split("|");
+    if (!animeId || !animeSession) {
+      throw new Error("Invalid AnimePahe episode ID");
+    }
+
     const html = await fetchAnimePaheHtml(
-      `/play/${encodeURIComponent(animeId ?? "")}/${encodeURIComponent(animeSession ?? "")}`,
+      \`/play/\${encodeURIComponent(animeId)}/\${encodeURIComponent(animeSession)}\`,
     );
     const { document } = parseHTML(html);
 
-    const downloadLinks = Array.from(document.querySelectorAll('div#pickDownload > a'));
-    const buttons = Array.from(document.querySelectorAll('div#resolutionMenu > button'));
-    const videos = [];
-
-    const USE_HLS_LINKS = false; // currently doesn't work with true
-    // check for fixes at https://github.com/m2k3a/mangayomi-extensions/blob/main/dart/anime/src/en/animepahe/animepahe.dart
-    // or https://github.com/yuzono/aniyomi-extensions/blob/master/src/en/animepahe/src/eu/kanade/tachiyomi/animeextension/en/animepahe/KwikExtractor.kt#L58
-    // or maybe find a fix yourself
-
-    for (let i = 0; i < buttons.length; i++) {
-      const btn = buttons[i]!;
-      const audio = btn.getAttribute('data-audio');
-      const kwikLink = btn.getAttribute('data-src');
-      const quality = btn.getAttribute("data-resolution") ?? "Unknown";
-      const paheWinLink = downloadLinks[i]?.getAttribute('href') ?? "";
-
-      if (USE_HLS_LINKS) {
-
-        // First request to get kwik headers
-        const kwikHeadersResponse = await fetch(
-          `${paheWinLink}/i`, {
-          redirect: 'manual',
-          headers: {
-            'Referer': 'https://animepahe.com'
-          }
-        }
-        );
-        const kwikHeaders = kwikHeadersResponse.headers;
-
-        const kwikLocation = getMapValue(JSON.stringify(kwikHeaders), 'location');
-        const kwikUrl = `https://${substringAfterLast(kwikLocation!, 'https://')}`;
-
-        // Second request to kwikUrl
-        const reskwik = await fetch(kwikUrl, {
-          headers: {
-            'Referer': 'https://kwik.cx/'
-          }
-        });
-
-        // Extract token parts using regex
-        const regex = /\"(\S+)\",\d+,\"(\S+)\",(\d+),(\d+)/;
-        const matches = (await reskwik.text()).match(regex);
-        if (!matches) {
-          throw new Error('Failed to extract token parts');
-        }
-
-        // Decrypt the token
-        const token = decrypt(
-          matches[1]!,
-          matches[2]!,
-          matches[3]!,
-          parseInt(matches[4]!)
-        );
-
-        // Extract URL and token from decrypted token
-        const urlMatch = token.match(/action="([^"]+)"/);
-        const tokMatch = token.match(/value="([^"]+)"/);
-
-        if (!urlMatch || !tokMatch) {
-          throw new Error('Failed to extract URL or token');
-        }
-
-        const url = urlMatch[1];
-        const tok = tokMatch[1];
-
-        let code = 419;
-        let tries = 0;
-        let location = '';
-
-        // Retry loop
-        while (code !== 302 && tries < 20) {
-          let cookie = getMapValue(
-            JSON.stringify(res.headers),
-            'cookie'
-          ) || '';
-
-          const setCookie = getMapValue(JSON.stringify(reskwik.headers), 'set-cookie') || '';
-          cookie += `; ${setCookie.replace('path=/;', '')}`;
-
-
-          const resNo = await fetch(url!, {
-            method: 'POST',
-            redirect: 'manual',
-            headers: {
-              'referer': reskwik.url,
-              'cookie': cookie,
-              'user-agent': getMapValue(
-                JSON.stringify(res.headers),
-                'user-agent'
-              ) || '',
-              'content-type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({ _token: tok! }).toString()
-          });
-
-          code = resNo.status;
-          tries++;
-          location = getMapValue(JSON.stringify(resNo.headers), 'location') || '';
-
-          if (code === 302) {
-            break;
-          }
-
-          // Add a small delay between retries
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-
-        if (tries >= 20) {
-          throw new Error('Failed to extract the stream uri from kwik.');
-        }
-
-        const video = {
-          title: `${audio} / ${quality}p`,
-          url: location,
-          id: `ap${animeId}--${quality}`,
-          _quality: quality,
-          _audio: audio,
-        };
-        videos.push(video);
-      } else {
-        // Direct link extraction
-        if (!kwikLink) {
-          console.warn("Skipping a stream option without a Kwik URL");
-          continue;
-        }
-
-        const ress = await fetch(kwikLink, {
-          headers: {
-            Referer: `${BASEURL}/`,
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-          },
-        });
-        if (!ress.ok) {
-          throw new Error(`Kwik request failed with HTTP ${ress.status}`);
-        }
-
-        const body = await ress.text();
-        const scriptNodes = parseHTML(body).document.querySelectorAll("script");
-        const scriptNode = Array.from(scriptNodes).find((node) =>
-          node.innerHTML.includes("eval(function"),
-        );
-        if (!scriptNode) {
-          throw new Error("Kwik page did not contain the expected packed player script");
-        }
-
-        const script = substringAfterLast(scriptNode.innerHTML, "eval(function(");
-        const unpacked = unpackJsAndCombine("eval(function(" + script);
-        const sourceMatch = unpacked.match(
-          /(?:const|let|var)\s+source\s*=\s*['"]([^'"]+)['"]/,
-        );
-        const videoUrl = sourceMatch?.[1] ?? "";
-        if (!videoUrl || !/^https:\/\//i.test(videoUrl)) {
-          throw new Error("Could not extract a valid HTTPS video URL from the Kwik player");
-        }
-
-        const video = {
-          title: `${audio ?? "Unknown"} / ${quality}p`,
-          url: videoUrl,
-          id: `ap${animeId}--${quality}--${audio ?? "unknown"}`,
-          _quality: quality,
-          _audio: audio ?? "Unknown",
-        };
-        videos.push(video);
-      }
-
+    const buttons = Array.from(
+      document.querySelectorAll("div#resolutionMenu > button"),
+    );
+    if (buttons.length === 0) {
+      throw new Error("AnimePahe did not return any playable resolution options");
     }
 
-    videos.sort((a, b) => {
-      return parseInt(b._quality ?? "") - parseInt(a._quality ?? "")
-    });
-    return videos;
+    const videos: Array<{
+      id: string;
+      title: string;
+      url: string;
+      _quality: string;
+    }> = [];
 
+    for (const button of buttons) {
+      const audio = button.getAttribute("data-audio") ?? "Unknown";
+      const quality = button.getAttribute("data-resolution") ?? "Unknown";
+      const kwikLink = button.getAttribute("data-src");
+
+      if (!kwikLink) continue;
+
+      let kwikUrl: URL;
+      try {
+        kwikUrl = new URL(kwikLink, BASEURL);
+      } catch {
+        console.warn("Skipping an invalid Kwik player URL");
+        continue;
+      }
+
+      const kwikHost = kwikUrl.hostname.toLowerCase();
+      const isKwikHost =
+        kwikHost === "kwik.cx" ||
+        kwikHost.endsWith(".kwik.cx") ||
+        kwikHost === "kwik.si" ||
+        kwikHost.endsWith(".kwik.si");
+      if (kwikUrl.protocol !== "https:" || !isKwikHost) {
+        console.warn("Skipping a player URL outside the expected Kwik hosts");
+        continue;
+      }
+
+      const response = await fetch(kwikUrl, {
+        headers: {
+          Referer: \`\${BASEURL}/\`,
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        },
+      });
+      if (!response.ok) {
+        console.warn(\`Kwik request failed with HTTP \${response.status}\`);
+        continue;
+      }
+
+      const body = await response.text();
+      const scriptNode = Array.from(
+        parseHTML(body).document.querySelectorAll("script"),
+      ).find((node) => node.innerHTML.includes("eval(function"));
+
+      if (!scriptNode) {
+        console.warn("Kwik page did not contain the expected player script");
+        continue;
+      }
+
+      const packedScript = \`eval(function(\${substringAfterLast(
+        scriptNode.innerHTML,
+        "eval(function(",
+      )}\`;
+      const unpackedScript = unpackJsAndCombine(packedScript);
+      const sourceMatch = unpackedScript.match(
+        /(?:const|let|var)\s+source\s*=\s*['"]([^'"]+)['"]/,
+      );
+      const videoUrl = sourceMatch?.[1] ?? "";
+
+      let parsedVideoUrl: URL;
+      try {
+        parsedVideoUrl = new URL(videoUrl);
+      } catch {
+        console.warn("Kwik player did not expose a valid stream URL");
+        continue;
+      }
+      if (parsedVideoUrl.protocol !== "https:") {
+        console.warn("Skipping a non-HTTPS stream URL");
+        continue;
+      }
+
+      videos.push({
+        id: \`ap\${animeId}--\${quality}--\${audio}\`,
+        title: \`\${audio} / \${quality}p\`,
+        url: parsedVideoUrl.href,
+        _quality: quality,
+      });
+    }
+
+    videos.sort(
+      (a, b) => Number.parseInt(b._quality, 10) - Number.parseInt(a._quality, 10),
+    );
+
+    if (videos.length === 0) {
+      throw new Error(
+        "No direct video URL could be extracted from the available Kwik options",
+      );
+    }
+
+    return videos.map(({ id, title, url }) => ({ id, title, url }));
   }
 }
 
