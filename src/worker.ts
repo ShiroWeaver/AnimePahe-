@@ -17,7 +17,7 @@ const STREAM_HOST_SUFFIXES = [
 ];
 
 function hostAllowed(hostname: string, kind: "image" | "stream"): boolean {
-  const host = hostname.toLowerCase().replace(/\\.$/, "");
+  const host = hostname.toLowerCase().replace(/\.$/, "");
   if (kind === "image") {
     return (
       IMAGE_HOSTS.has(host) ||
