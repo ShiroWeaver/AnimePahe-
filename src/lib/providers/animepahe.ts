@@ -6,23 +6,71 @@ import JsUnpacker from "js-unpacker"; // necessary for one of the animepahe scra
 
 const BASEURL = "https://animepahe.pw";
 
+const CLOUDFLARE_CHALLENGE =
+  /cf-chl-|challenge-platform|just a moment|verify you are human|performing security verification/i;
+
+async function animePaheRequest(path: string): Promise<Response> {
+  const url = new URL(path, `${BASEURL}/`);
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Referer": `${BASEURL}/`,
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.clone().text().catch(() => "");
+    if (CLOUDFLARE_CHALLENGE.test(body) || [403, 429, 503].includes(response.status)) {
+      throw new Error(
+        `AnimePahe blocked this server request (HTTP ${response.status}). It may require a browser-based Cloudflare verification; a normal Cloudflare Worker cannot complete that check.`,
+      );
+    }
+    throw new Error(`AnimePahe request failed with HTTP ${response.status}`);
+  }
+
+  return response;
+}
+
+async function fetchAnimePaheJson(path: string): Promise<unknown> {
+  const response = await animePaheRequest(path);
+  const body = await response.text();
+
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    if (CLOUDFLARE_CHALLENGE.test(body)) {
+      throw new Error(
+        "AnimePahe returned a Cloudflare verification page instead of JSON. A browser-capable session is required.",
+      );
+    }
+    throw new Error("AnimePahe returned an invalid JSON response");
+  }
+}
+
+async function fetchAnimePaheHtml(path: string): Promise<string> {
+  const response = await animePaheRequest(path);
+  const body = await response.text();
+
+  if (CLOUDFLARE_CHALLENGE.test(body)) {
+    throw new Error(
+      "AnimePahe returned a Cloudflare verification page. A standard Cloudflare Worker cannot complete browser verification.",
+    );
+  }
+
+  return body;
+}
+
+function safeIsoDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+}
+
 export class AnimePaheProvider implements Provider {
   async search(title: string, proxyBase: string) {
-    const response = await fetch(`${BASEURL}/api?m=search&l=8&q=${title}`, {
-      method: "GET",
-      headers: {
-        Cookie: '__ddg1_=;__ddg2_=;',
-      },
-    });
-
-    const json = await response.json().catch(() => {
-      console.error("Search returned invalid JSON");
-      return null;
-    });
-
-    if (!json) {
-      return [];
-    }
+    const params = new URLSearchParams({ m: "search", l: "8", q: title });
+    const json = await fetchAnimePaheJson(`/api?${params.toString()}`);
 
     const schema = z.object({
       data: z.array(
@@ -54,12 +102,7 @@ export class AnimePaheProvider implements Provider {
   }
 
   async getLatest(proxyBase: string) {
-    const response = await fetch(`${BASEURL}/api?m=airing&page=1`, {
-      headers: {
-        Cookie: '__ddg1_=;__ddg2_=;',
-      }
-    })
-    const latestJson = await response.json();
+    const latestJson = await fetchAnimePaheJson("/api?m=airing&page=1");
     const latestSchema = z.object({
       data: z.array(
         z.object({
@@ -93,14 +136,7 @@ export class AnimePaheProvider implements Provider {
   async getMeta(id: string, proxyBase: string): Promise<Meta> {
     const animeId = id.replace("ap", "").split("|")[0];
 
-    const response = await fetch(`${BASEURL}/anime/${animeId}`, {
-      method: "GET",
-      headers: {
-        Cookie: '__ddg1_=;__ddg2_=;',
-      },
-    });
-
-    const json = await response.text();
+    const json = await fetchAnimePaheHtml(`/anime/${encodeURIComponent(animeId)}`);
 
     const { document } = parseHTML(json);
     var description = document.querySelector('.anime-synopsis')?.innerHTML.replace(/<br\s*\/?>/g, "\n").trim();
@@ -154,31 +190,34 @@ export class AnimePaheProvider implements Provider {
     });
 
     const fetchVideos = async (page: number) => {
-      const videosData = await fetch(`${BASEURL}/api?m=release&id=${animeId}&sort=episode_dsc&page=${page}`, {
-        headers: {
-          Cookie: '__ddg1_=;__ddg2_=;',
-        }
-      });
-      const videosJson = await videosData.json();
-      return videosJson
+      return await fetchAnimePaheJson(
+        `/api?m=release&id=${encodeURIComponent(animeId)}&sort=episode_dsc&page=${page}`,
+      );
     }
 
-    const videosJson = await fetchVideos(1)
+    const videosJson = await fetchVideos(1);
     const videosParsed = videosSchema.parse(videosJson);
 
-    let allData = []
-    if (videosParsed.last_page > 1) {
-      // [2, ... last_page]
-      let pages = Array.from(Array(videosParsed.last_page - 2), (_, i) => i + 2)
-      allData = (await Promise.all(
-        pages.map((page) => fetchVideos(page))
-      )).map(p => p.data);
-    }
+    // Page 1 is already loaded. Fetch every remaining page, including last_page.
+    const additionalPages = Array.from(
+      { length: Math.max(0, videosParsed.last_page - 1) },
+      (_, index) => index + 2,
+    );
+    const additionalPageData = await Promise.all(
+      additionalPages.map(async (page) =>
+        videosSchema.parse(await fetchVideos(page)),
+      ),
+    );
 
-    const videos = videosParsed.data.concat(...allData).map((video) => ({
+    const allVideos = [
+      ...videosParsed.data,
+      ...additionalPageData.flatMap((page) => page.data),
+    ];
+
+    const videos = allVideos.map((video) => ({
       id: `ap${animeId}|${video.session}`,
       title: video.title || `Episode ${video.episode}`,
-      released: new Date(video.created_at).toISOString(),
+      released: safeIsoDate(video.created_at),
       episode: video.episode,
       season: 1, // if no season they will be sorted in reverse order
       thumbnail: proxyUrl(video.snapshot, proxyBase),
@@ -207,8 +246,9 @@ export class AnimePaheProvider implements Provider {
     id: string
   ): Promise<Array<{ id: string; title: string; url: string }>> {
     const [animeId, animeSession] = id.split("|");
-    const res = await fetch(`${BASEURL}/play/${animeId}/${animeSession}`, { headers: { Cookie: '__ddg1_=;__ddg2_=;' } });
-    const html = await res.text();
+    const html = await fetchAnimePaheHtml(
+      `/play/${encodeURIComponent(animeId ?? "")}/${encodeURIComponent(animeSession ?? "")}`,
+    );
     const { document } = parseHTML(html);
 
     const downloadLinks = Array.from(document.querySelectorAll('div#pickDownload > a'));
@@ -224,8 +264,8 @@ export class AnimePaheProvider implements Provider {
       const btn = buttons[i]!;
       const audio = btn.getAttribute('data-audio');
       const kwikLink = btn.getAttribute('data-src');
-      const quality = btn.getAttribute("data-resolution")
-      const paheWinLink = downloadLinks[i]!.getAttribute('href');
+      const quality = btn.getAttribute("data-resolution") ?? "Unknown";
+      const paheWinLink = downloadLinks[i]?.getAttribute('href') ?? "";
 
       if (USE_HLS_LINKS) {
 
@@ -332,24 +372,47 @@ export class AnimePaheProvider implements Provider {
         videos.push(video);
       } else {
         // Direct link extraction
-        const ress = await fetch(kwikLink!, { headers: { 'Referer': 'https://animepahe.com', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' } });
+        if (!kwikLink) {
+          console.warn("Skipping a stream option without a Kwik URL");
+          continue;
+        }
+
+        const ress = await fetch(kwikLink, {
+          headers: {
+            Referer: `${BASEURL}/`,
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+          },
+        });
+        if (!ress.ok) {
+          throw new Error(`Kwik request failed with HTTP ${ress.status}`);
+        }
+
         const body = await ress.text();
         const scriptNodes = parseHTML(body).document.querySelectorAll("script");
-        const scriptNode = Array.from(scriptNodes).find((node) => node.innerHTML.includes("eval(function"));
-        const script = substringAfterLast(scriptNode?.innerHTML ?? "", "eval(function(");
-        const videoUrl = substringBefore(
-          substringAfter(
-            unpackJsAndCombine("eval(function(" + script),
-            "const source='"
-          ),
-          "';"
+        const scriptNode = Array.from(scriptNodes).find((node) =>
+          node.innerHTML.includes("eval(function"),
         );
+        if (!scriptNode) {
+          throw new Error("Kwik page did not contain the expected packed player script");
+        }
+
+        const script = substringAfterLast(scriptNode.innerHTML, "eval(function(");
+        const unpacked = unpackJsAndCombine("eval(function(" + script);
+        const sourceMatch = unpacked.match(
+          /(?:const|let|var)\s+source\s*=\s*['"]([^'"]+)['"]/,
+        );
+        const videoUrl = sourceMatch?.[1] ?? "";
+        if (!videoUrl || !/^https:\/\//i.test(videoUrl)) {
+          throw new Error("Could not extract a valid HTTPS video URL from the Kwik player");
+        }
+
         const video = {
-          title: `${audio} / ${quality}p`,
+          title: `${audio ?? "Unknown"} / ${quality}p`,
           url: videoUrl,
-          id: `ap${animeId}--${quality}--${audio}`,
+          id: `ap${animeId}--${quality}--${audio ?? "unknown"}`,
           _quality: quality,
-          _audio: audio,
+          _audio: audio ?? "Unknown",
         };
         videos.push(video);
       }
@@ -359,7 +422,6 @@ export class AnimePaheProvider implements Provider {
     videos.sort((a, b) => {
       return parseInt(b._quality ?? "") - parseInt(a._quality ?? "")
     });
-    videos.map(v => { v.id, v.title, v.url });
     return videos;
 
   }
