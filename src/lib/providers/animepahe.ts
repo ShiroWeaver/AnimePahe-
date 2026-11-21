@@ -134,7 +134,7 @@ export class AnimePaheProvider implements Provider {
   }
 
   async getMeta(id: string, proxyBase: string): Promise<Meta> {
-    const animeId = id.replace("ap", "").split("|")[0];
+    const animeId = id.replace(/^ap/, "").split("|")[0];
 
     const json = await fetchAnimePaheHtml(`/anime/${encodeURIComponent(animeId)}`);
 
@@ -142,7 +142,7 @@ export class AnimePaheProvider implements Provider {
     var description = document.querySelector('.anime-synopsis')?.innerHTML.replace(/<br\s*\/?>/g, "\n").trim();
     var name = document.querySelector('span[style="user-select:text"]')?.textContent?.trim();
     var poster = document.querySelector('img[data-src$=".jpg"]')?.getAttribute('data-src')?.trim();
-    var background = "https:" + document.querySelector('div.anime-cover')?.getAttribute('data-src')?.trim();
+    var background = document.querySelector('div.anime-cover')?.getAttribute('data-src')?.trim();
     const pTags = document.querySelectorAll(".anime-info p");
     const airedTag = Array.from(pTags).find(p =>
       p.textContent.trim().startsWith('Aired:')
@@ -160,7 +160,18 @@ export class AnimePaheProvider implements Provider {
       .replace('Duration:', '')       // remove the label
       .trim();
 
-    var externalLink = new URL(document.querySelector(".external-links a")?.getAttribute("href") ?? "", "https://example.com").href // can't use :(
+    const externalHref = document.querySelector(".external-links a")?.getAttribute("href")?.trim();
+    let externalLink = "";
+    if (externalHref) {
+      try {
+        const parsedExternalUrl = new URL(externalHref, BASEURL);
+        if (parsedExternalUrl.protocol === "https:" || parsedExternalUrl.protocol === "http:") {
+          externalLink = parsedExternalUrl.href;
+        }
+      } catch {
+        externalLink = "";
+      }
+    }
     var genres = Array.from(document.querySelectorAll(".anime-genre li")).map(g => g.textContent.trim())
 
 
@@ -429,7 +440,14 @@ export class AnimePaheProvider implements Provider {
 
 
 function proxyUrl(url: string, proxyBase: string) {
-  return `${proxyBase}img/${encodeURIComponent(url)}`;
+  if (!url.trim()) return "";
+  try {
+    const normalizedUrl = new URL(url, BASEURL);
+    if (normalizedUrl.protocol !== "https:") return "";
+    return `${proxyBase}img/${encodeURIComponent(normalizedUrl.href)}`;
+  } catch {
+    return "";
+  }
 }
 
 function substringBefore(str: string, pattern: string) {
