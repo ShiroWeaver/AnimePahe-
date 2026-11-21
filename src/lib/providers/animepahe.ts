@@ -262,7 +262,7 @@ export class AnimePaheProvider implements Provider {
     }
 
     const html = await fetchAnimePaheHtml(
-      \`/play/\${encodeURIComponent(animeId)}/\${encodeURIComponent(animeSession)}\`,
+      `/play/${encodeURIComponent(animeId)}/${encodeURIComponent(animeSession)}`,
     );
     const { document } = parseHTML(html);
 
@@ -308,13 +308,13 @@ export class AnimePaheProvider implements Provider {
 
       const response = await fetch(kwikUrl, {
         headers: {
-          Referer: \`\${BASEURL}/\`,
+          Referer: `${BASEURL}/`,
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
         },
       });
       if (!response.ok) {
-        console.warn(\`Kwik request failed with HTTP \${response.status}\`);
+        console.warn(`Kwik request failed with HTTP ${response.status}`);
         continue;
       }
 
@@ -328,10 +328,10 @@ export class AnimePaheProvider implements Provider {
         continue;
       }
 
-      const packedScript = \`eval(function(\${substringAfterLast(
+      const packedScript = `eval(function(${substringAfterLast(
         scriptNode.innerHTML,
         "eval(function(",
-      )}\`;
+      )}`;
       const unpackedScript = unpackJsAndCombine(packedScript);
       const sourceMatch = unpackedScript.match(
         /(?:const|let|var)\s+source\s*=\s*['"]([^'"]+)['"]/,
@@ -351,8 +351,8 @@ export class AnimePaheProvider implements Provider {
       }
 
       videos.push({
-        id: \`ap\${animeId}--\${quality}--\${audio}\`,
-        title: \`\${audio} / \${quality}p\`,
+        id: `ap${animeId}--${quality}--${audio}`,
+        title: `${audio} / ${quality}p`,
         url: parsedVideoUrl.href,
         _quality: quality,
       });
